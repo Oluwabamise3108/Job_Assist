@@ -4,10 +4,36 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.config import settings
 
 
+def _normalize_database_url(url: str) -> str:
+    """
+    Ensure PostgreSQL connections use the psycopg 3 SQLAlchemy dialect.
+    """
+
+    if url.startswith("postgresql://"):
+        return url.replace(
+            "postgresql://",
+            "postgresql+psycopg://",
+            1,
+        )
+
+    if url.startswith("postgres://"):
+        return url.replace(
+            "postgres://",
+            "postgresql+psycopg://",
+            1,
+        )
+
+    return url
+
+
+database_url = _normalize_database_url(
+    settings.database_url
+)
+
+
 engine = create_engine(
-    settings.database_url,
+    database_url,
     pool_pre_ping=True,
-    pool_recycle=1800,
 )
 
 
@@ -23,5 +49,6 @@ def get_db():
 
     try:
         yield db
+
     finally:
         db.close()
