@@ -76,3 +76,16 @@ def update_job_analysis(
     db.refresh(job)
 
     return job
+
+def get_job_by_id(
+    db: Session,
+    job_id: int,
+):
+    """
+    Retrieve a stored job by its database ID.
+    """
+    statement = select(Job).where(
+        Job.id == job_id
+    )
+
+    return db.scalar(statement)
