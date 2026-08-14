@@ -1,13 +1,16 @@
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import engine, get_db
 from app.models import Base
 
-from app.repositories.job import get_job_by_id
+from app.repositories.job import (
+    get_job_by_id,
+    search_jobs as search_jobs_db,
+)
 
 from app.schemas.job import (
     JobAnalysisRequest,
@@ -47,10 +50,6 @@ API_VERSION = "0.4.0"
 async def lifespan(app: FastAPI):
     """
     Initialize the database when the application starts.
-
-    This ensures the PostgreSQL database contains the
-    application's SQLAlchemy tables before requests are
-    processed.
     """
 
     Base.metadata.create_all(bind=engine)
@@ -87,9 +86,6 @@ ENABLED_DISCOVERY_SOURCES = [
 def get_discovery_sources() -> list:
     """
     Build discovery source instances from the source registry.
-
-    Source-specific implementation details remain inside
-    the source registry.
     """
 
     return create_sources(
@@ -151,21 +147,6 @@ def analyze_job(
 ):
     """
     Analyze a single job posting.
-
-    Pipeline:
-
-        Job
-         │
-         ├── Match Engine
-         ├── Eligibility Engine
-         ├── Risk Engine
-         │
-         └── Decision Engine
-                 │
-                 ├── APPLY
-                 ├── REVIEW
-                 ├── POSSIBLE
-                 └── SKIP
     """
 
     combined_text = (
@@ -173,44 +154,24 @@ def analyze_job(
         f"{request.description}"
     )
 
-    # --------------------------------------------------------
-    # MATCH
-    # --------------------------------------------------------
-
     match = analyze_match(
         title=request.title,
         description=request.description,
     )
 
-    # --------------------------------------------------------
-    # ELIGIBILITY
-    # --------------------------------------------------------
-
     eligibility = analyze_eligibility(
         combined_text,
     )
 
-    # --------------------------------------------------------
-    # RISK
-    # --------------------------------------------------------
-
     risk = analyze_risk(
         combined_text,
     )
-
-    # --------------------------------------------------------
-    # DECISION
-    # --------------------------------------------------------
 
     decision = make_decision(
         match=match,
         eligibility=eligibility,
         risk=risk,
     )
-
-    # --------------------------------------------------------
-    # RESPONSE
-    # --------------------------------------------------------
 
     return {
         "match_score": match["score"],
@@ -247,30 +208,6 @@ def ingest_job_endpoint(
 ):
     """
     Ingest a job into PostgreSQL.
-
-    Pipeline:
-
-        Job
-         │
-         ▼
-       Normalize
-         │
-         ▼
-      Fingerprint
-         │
-         ▼
-      Deduplicate
-         │
-         ▼
-       Analyze
-         │
-         ├── Match
-         ├── Eligibility
-         ├── Risk
-         └── Decision
-         │
-         ▼
-      PostgreSQL
     """
 
     return ingest_job(
@@ -284,6 +221,121 @@ def ingest_job_endpoint(
         description=request.description,
         is_remote=request.is_remote,
     )
+
+
+# ============================================================
+# DATABASE JOB SEARCH / FILTER
+# ============================================================
+
+@app.get(
+    "/api/jobs",
+    response_model=list[JobDetailResponse],
+    tags=["Jobs"],
+)
+def search_stored_jobs(
+    keyword: str | None = Query(
+        default=None,
+        description=(
+            "Search stored jobs by title, company, "
+            "or description."
+        ),
+    ),
+    minimum_match_score: int | None = Query(
+        default=None,
+        ge=0,
+        le=100,
+        description=(
+            "Only return jobs with a match score "
+            "greater than or equal to this value."
+        ),
+    ),
+    recommendation: str | None = Query(
+        default=None,
+        description=(
+            "Filter by recommendation, e.g. "
+            "APPLY, REVIEW, POSSIBLE, or SKIP."
+        ),
+    ),
+    remote_only: bool = Query(
+        default=False,
+        description=(
+            "Only return jobs marked as remote."
+        ),
+    ),
+    eligible_only: bool = Query(
+        default=False,
+        description=(
+            "Only return jobs considered eligible."
+        ),
+    ),
+    limit: int = Query(
+        default=20,
+        ge=1,
+        le=100,
+        description=(
+            "Maximum number of jobs to return."
+        ),
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Search and filter jobs already stored in PostgreSQL.
+
+    This endpoint does NOT discover new jobs.
+
+    Supported filters can be combined:
+
+        /api/jobs
+
+        /api/jobs?keyword=customer%20support
+
+        /api/jobs?minimum_match_score=70
+
+        /api/jobs?recommendation=APPLY
+
+        /api/jobs?remote_only=true
+
+        /api/jobs?eligible_only=true
+
+        /api/jobs?keyword=customer%20support
+        &minimum_match_score=70
+        &recommendation=APPLY
+        &remote_only=true
+        &eligible_only=true
+        &limit=20
+    """
+
+    jobs = search_jobs_db(
+        db,
+        keyword=keyword,
+        minimum_match_score=minimum_match_score,
+        recommendation=recommendation,
+        remote_only=remote_only,
+        eligible_only=eligible_only,
+        limit=limit,
+    )
+
+    return [
+        {
+            "job_id": job.id,
+            "source": job.source,
+            "source_job_id": job.source_job_id,
+            "fingerprint": job.fingerprint,
+            "url": job.url,
+            "title": job.title,
+            "company": job.company,
+            "location": job.location,
+            "description": job.description,
+            "is_remote": job.is_remote,
+            "match_score": job.match_score,
+            "eligibility_score": job.eligibility_score,
+            "recommendation": job.recommendation,
+            "risk_severity": job.risk_severity,
+            "risk_flags": job.risk_flags or [],
+            "analysis": job.analysis,
+        }
+        for job in jobs
+    ]
 
 
 # ============================================================
@@ -303,8 +355,6 @@ def get_job_detail(
     Retrieve a previously stored job by database ID.
 
     This endpoint does NOT rediscover the job.
-
-    It retrieves the persisted job directly from PostgreSQL.
     """
 
     job = get_job_by_id(
@@ -354,7 +404,7 @@ def discover_jobs(
     """
     Discover jobs from all enabled job sources.
 
-    Source selection is controlled by the source registry.
+    This endpoint discovers new jobs and persists them.
     """
 
     sources = get_discovery_sources()

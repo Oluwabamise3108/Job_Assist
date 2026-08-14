@@ -77,6 +77,7 @@ def update_job_analysis(
 
     return job
 
+
 def get_job_by_id(
     db: Session,
     job_id: int,
@@ -84,8 +85,73 @@ def get_job_by_id(
     """
     Retrieve a stored job by its database ID.
     """
+
     statement = select(Job).where(
         Job.id == job_id
     )
 
     return db.scalar(statement)
+
+
+def search_jobs(
+    db: Session,
+    *,
+    keyword: Optional[str] = None,
+    minimum_match_score: Optional[int] = None,
+    recommendation: Optional[str] = None,
+    remote_only: bool = False,
+    eligible_only: bool = False,
+    limit: int = 20,
+) -> list[Job]:
+    """
+    Search and filter jobs already stored in the database.
+
+    This does NOT discover new jobs.
+    """
+
+    statement = select(Job)
+
+    # Keyword filter
+    if keyword:
+        search_term = f"%{keyword.strip()}%"
+
+        statement = statement.where(
+            (
+                Job.title.ilike(search_term)
+                | Job.company.ilike(search_term)
+                | Job.description.ilike(search_term)
+            )
+        )
+
+    # Minimum match score
+    if minimum_match_score is not None:
+        statement = statement.where(
+            Job.match_score >= minimum_match_score
+        )
+
+    # Recommendation filter
+    if recommendation:
+        statement = statement.where(
+            Job.recommendation == recommendation.upper()
+        )
+
+    # Remote-only filter
+    if remote_only:
+        statement = statement.where(
+            Job.is_remote.is_(True)
+        )
+
+    # Eligible-only filter
+    if eligible_only:
+        statement = statement.where(
+            Job.eligibility_score >= 50
+        )
+
+    # Newest jobs first
+    statement = (
+        statement
+        .order_by(Job.created_at.desc())
+        .limit(limit)
+    )
+
+    return list(db.scalars(statement).all())
