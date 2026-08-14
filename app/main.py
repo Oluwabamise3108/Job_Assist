@@ -1,8 +1,11 @@
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.database import get_db
+from app.database import engine, get_db
+from app.models import Base
 
 from app.schemas.job import (
     JobAnalysisRequest,
@@ -32,6 +35,19 @@ from app.sources.registry import create_sources
 
 API_VERSION = "0.4.0"
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Initialize required database tables when the application starts.
+
+    SQLAlchemy's create_all() is safe to run repeatedly:
+    existing tables are preserved and missing tables are created.
+    """
+    Base.metadata.create_all(bind=engine)
+    yield
+
+
 app = FastAPI(
     title=settings.app_name,
     version=API_VERSION,
@@ -40,6 +56,7 @@ app = FastAPI(
         "analyzing, scoring, filtering, and storing remote "
         "customer support opportunities."
     ),
+    lifespan=lifespan,
 )
 
 
