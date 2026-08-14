@@ -29,24 +29,30 @@ from app.services.risk import analyze_risk
 from app.sources.registry import create_sources
 
 
-# ============================================================
-# APPLICATION CONFIGURATION
-# ============================================================
-
 API_VERSION = "0.4.0"
 
+
+# ============================================================
+# DATABASE INITIALIZATION
+# ============================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Initialize required database tables when the application starts.
+    Initialize the database when the application starts.
 
-    SQLAlchemy's create_all() is safe to run repeatedly:
-    existing tables are preserved and missing tables are created.
+    This ensures the PostgreSQL database used by Render
+    contains the application's tables before requests are
+    processed.
     """
     Base.metadata.create_all(bind=engine)
+
     yield
 
+
+# ============================================================
+# APPLICATION
+# ============================================================
 
 app = FastAPI(
     title=settings.app_name,
@@ -73,10 +79,6 @@ ENABLED_DISCOVERY_SOURCES = [
 def get_discovery_sources() -> list:
     """
     Build discovery source instances from the source registry.
-
-    The API does not contain source-specific implementation
-    details. Source construction is delegated entirely to
-    app.sources.registry.
     """
     return create_sources(
         ENABLED_DISCOVERY_SOURCES
@@ -135,21 +137,6 @@ def analyze_job(
 ):
     """
     Analyze a single job posting.
-
-    Pipeline:
-
-        Job
-         │
-         ├── Match Engine
-         ├── Eligibility Engine
-         ├── Risk Engine
-         │
-         └── Decision Engine
-                 │
-                 ├── APPLY
-                 ├── REVIEW
-                 ├── POSSIBLE
-                 └── SKIP
     """
 
     combined_text = (
@@ -211,30 +198,6 @@ def ingest_job_endpoint(
 ):
     """
     Ingest a job into PostgreSQL.
-
-    Pipeline:
-
-        Job
-         │
-         ▼
-       Normalize
-         │
-         ▼
-      Fingerprint
-         │
-         ▼
-      Deduplicate
-         │
-         ▼
-       Analyze
-         │
-         ├── Match
-         ├── Eligibility
-         ├── Risk
-         └── Decision
-         │
-         ▼
-      PostgreSQL
     """
 
     return ingest_job(
@@ -265,40 +228,6 @@ def discover_jobs(
 ):
     """
     Discover jobs from all enabled job sources.
-
-    Source selection is controlled by the source registry.
-
-    Pipeline:
-
-        Source Registry
-             ↓
-        Search Sources
-             ↓
-        Source Failure Isolation
-             ↓
-        Normalize / Validate
-             ↓
-        Keyword Filter
-             ↓
-        Remote Filter
-             ↓
-        Ingest / Analyze
-             ↓
-        Deduplicate
-             ↓
-        Eligibility
-             ↓
-        Match Score
-             ↓
-        Recommendation
-             ↓
-        Global Eligibility
-             ↓
-        Ranking
-             ↓
-        Result Limit
-             ↓
-        Source Health Summary
     """
 
     sources = get_discovery_sources()
