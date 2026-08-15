@@ -331,6 +331,35 @@ def search_stored_jobs(
 
 
 # ============================================================
+# JOB DISCOVERY
+# ============================================================
+
+@app.post(
+    "/api/jobs/discover",
+    response_model=JobSearchResponse,
+    tags=["Jobs"],
+)
+def discover_jobs(
+    request: JobSearchRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Discover jobs from all enabled sources.
+
+    Discovered jobs are processed, analyzed,
+    deduplicated, and persisted.
+    """
+
+    sources = get_discovery_sources()
+
+    return search_jobs(
+        db,
+        request=request,
+        sources=sources,
+    )
+
+
+# ============================================================
 # JOB DETAIL
 # ============================================================
 
@@ -363,32 +392,3 @@ def get_job_detail(
         )
 
     return serialize_job(job)
-
-
-# ============================================================
-# JOB DISCOVERY
-# ============================================================
-
-@app.post(
-    "/api/jobs/discover",
-    response_model=JobSearchResponse,
-    tags=["Jobs"],
-)
-def discover_jobs(
-    request: JobSearchRequest,
-    db: Session = Depends(get_db),
-):
-    """
-    Discover jobs from all enabled sources.
-
-    Discovered jobs are processed, analyzed,
-    deduplicated, and persisted.
-    """
-
-    sources = get_discovery_sources()
-
-    return search_jobs(
-        db,
-        request=request,
-        sources=sources,
-    )
