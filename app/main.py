@@ -41,6 +41,12 @@ from app.sources.registry import create_sources
 
 API_VERSION = "0.4.0"
 
+ENABLED_DISCOVERY_SOURCES = [
+    "linkedin",
+    "remoteok",
+    "weworkremotely",
+]
+
 
 # ============================================================
 # DATABASE INITIALIZATION
@@ -49,7 +55,7 @@ API_VERSION = "0.4.0"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Initialize the database when the application starts.
+    Initialize database tables when the application starts.
     """
 
     Base.metadata.create_all(bind=engine)
@@ -66,26 +72,20 @@ app = FastAPI(
     version=API_VERSION,
     description=(
         "Remote Job Intelligence API for discovering, "
-        "analyzing, scoring, filtering, and storing remote "
-        "customer support opportunities."
+        "analyzing, scoring, filtering, and storing "
+        "remote customer support opportunities."
     ),
     lifespan=lifespan,
 )
 
 
 # ============================================================
-# DISCOVERY CONFIGURATION
+# DISCOVERY SOURCES
 # ============================================================
-
-ENABLED_DISCOVERY_SOURCES = [
-    "linkedin",
-    "remoteok",
-]
-
 
 def get_discovery_sources() -> list:
     """
-    Build discovery source instances from the source registry.
+    Build enabled discovery source instances.
     """
 
     return create_sources(
@@ -94,7 +94,36 @@ def get_discovery_sources() -> list:
 
 
 # ============================================================
-# HEALTH CHECK
+# RESPONSE HELPERS
+# ============================================================
+
+def serialize_job(job) -> dict:
+    """
+    Convert a SQLAlchemy Job model into the API response shape.
+    """
+
+    return {
+        "job_id": job.id,
+        "source": job.source,
+        "source_job_id": job.source_job_id,
+        "fingerprint": job.fingerprint,
+        "url": job.url,
+        "title": job.title,
+        "company": job.company,
+        "location": job.location,
+        "description": job.description,
+        "is_remote": job.is_remote,
+        "match_score": job.match_score,
+        "eligibility_score": job.eligibility_score,
+        "recommendation": job.recommendation,
+        "risk_severity": job.risk_severity,
+        "risk_flags": job.risk_flags or [],
+        "analysis": job.analysis,
+    }
+
+
+# ============================================================
+# SYSTEM
 # ============================================================
 
 @app.get(
@@ -111,10 +140,6 @@ def health_check():
         "environment": settings.environment,
     }
 
-
-# ============================================================
-# ROOT
-# ============================================================
 
 @app.get(
     "/",
@@ -146,7 +171,17 @@ def analyze_job(
     request: JobAnalysisRequest,
 ):
     """
-    Analyze a single job posting.
+    Analyze a single job without storing it.
+
+    Pipeline:
+
+        Job
+         |
+         +-- Match
+         +-- Eligibility
+         +-- Risk
+         |
+         +-- Decision
     """
 
     combined_text = (
@@ -175,18 +210,18 @@ def analyze_job(
 
     return {
         "match_score": match["score"],
-        "eligibility_score": eligibility[
-            "eligibility_score"
-        ],
-        "recommendation": decision[
-            "recommendation"
-        ],
-        "hard_reject": decision[
-            "hard_reject"
-        ],
-        "hard_reject_reasons": decision[
-            "hard_reject_reasons"
-        ],
+        "eligibility_score": (
+            eligibility["eligibility_score"]
+        ),
+        "recommendation": (
+            decision["recommendation"]
+        ),
+        "hard_reject": (
+            decision["hard_reject"]
+        ),
+        "hard_reject_reasons": (
+            decision["hard_reject_reasons"]
+        ),
         "match": match,
         "eligibility": eligibility,
         "risk": risk,
@@ -207,7 +242,7 @@ def ingest_job_endpoint(
     db: Session = Depends(get_db),
 ):
     """
-    Ingest a job into PostgreSQL.
+    Ingest, analyze, deduplicate, and store a job.
     """
 
     return ingest_job(
@@ -245,64 +280,38 @@ def search_stored_jobs(
         ge=0,
         le=100,
         description=(
-            "Only return jobs with a match score "
-            "greater than or equal to this value."
+            "Minimum acceptable match score."
         ),
     ),
     recommendation: str | None = Query(
         default=None,
         description=(
-            "Filter by recommendation, e.g. "
-            "APPLY, REVIEW, POSSIBLE, or SKIP."
+            "Recommendation filter: APPLY, REVIEW, "
+            "POSSIBLE, or SKIP."
         ),
     ),
     remote_only: bool = Query(
         default=False,
-        description=(
-            "Only return jobs marked as remote."
-        ),
+        description="Only return remote jobs.",
     ),
     eligible_only: bool = Query(
         default=False,
-        description=(
-            "Only return jobs considered eligible."
-        ),
+        description="Only return eligible jobs.",
     ),
     limit: int = Query(
         default=20,
         ge=1,
         le=100,
-        description=(
-            "Maximum number of jobs to return."
-        ),
+        description="Maximum number of results.",
     ),
     db: Session = Depends(get_db),
 ):
     """
-    Search and filter jobs already stored in PostgreSQL.
+    Search jobs already stored in PostgreSQL.
 
-    This endpoint does NOT discover new jobs.
+    This endpoint does NOT rediscover jobs.
 
-    Supported filters can be combined:
-
-        /api/jobs
-
-        /api/jobs?keyword=customer%20support
-
-        /api/jobs?minimum_match_score=70
-
-        /api/jobs?recommendation=APPLY
-
-        /api/jobs?remote_only=true
-
-        /api/jobs?eligible_only=true
-
-        /api/jobs?keyword=customer%20support
-        &minimum_match_score=70
-        &recommendation=APPLY
-        &remote_only=true
-        &eligible_only=true
-        &limit=20
+    Filters can be combined.
     """
 
     jobs = search_jobs_db(
@@ -316,24 +325,7 @@ def search_stored_jobs(
     )
 
     return [
-        {
-            "job_id": job.id,
-            "source": job.source,
-            "source_job_id": job.source_job_id,
-            "fingerprint": job.fingerprint,
-            "url": job.url,
-            "title": job.title,
-            "company": job.company,
-            "location": job.location,
-            "description": job.description,
-            "is_remote": job.is_remote,
-            "match_score": job.match_score,
-            "eligibility_score": job.eligibility_score,
-            "recommendation": job.recommendation,
-            "risk_severity": job.risk_severity,
-            "risk_flags": job.risk_flags or [],
-            "analysis": job.analysis,
-        }
+        serialize_job(job)
         for job in jobs
     ]
 
@@ -365,27 +357,12 @@ def get_job_detail(
     if job is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Job with ID {job_id} not found.",
+            detail=(
+                f"Job with ID {job_id} not found."
+            ),
         )
 
-    return {
-        "job_id": job.id,
-        "source": job.source,
-        "source_job_id": job.source_job_id,
-        "fingerprint": job.fingerprint,
-        "url": job.url,
-        "title": job.title,
-        "company": job.company,
-        "location": job.location,
-        "description": job.description,
-        "is_remote": job.is_remote,
-        "match_score": job.match_score,
-        "eligibility_score": job.eligibility_score,
-        "recommendation": job.recommendation,
-        "risk_severity": job.risk_severity,
-        "risk_flags": job.risk_flags or [],
-        "analysis": job.analysis,
-    }
+    return serialize_job(job)
 
 
 # ============================================================
@@ -402,9 +379,10 @@ def discover_jobs(
     db: Session = Depends(get_db),
 ):
     """
-    Discover jobs from all enabled job sources.
+    Discover jobs from all enabled sources.
 
-    This endpoint discovers new jobs and persists them.
+    Discovered jobs are processed, analyzed,
+    deduplicated, and persisted.
     """
 
     sources = get_discovery_sources()
